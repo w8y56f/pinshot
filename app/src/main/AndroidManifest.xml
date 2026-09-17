@@ -1,0 +1,21 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application android:allowBackup="false" android:label="钉图截图" android:theme="@style/Theme.PinShot">
+        <activity android:name=".RegionSelectionActivity" android:exported="false" />
+        <activity android:name=".CaptureActivity" android:theme="@style/Theme.PinShot.Transparent" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <service android:name=".CaptureService" android:foregroundServiceType="mediaProjection" android:exported="false" />
+        <service android:name=".PinTileService" android:label="钉图截图" android:icon="@drawable/ic_pin" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE" android:exported="true">
+            <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter>
+        </service>
+        <service android:name=".OverlayService" android:exported="false" />
+    </application>
+</manifest>

@@ -4,10 +4,4 @@
         <item name="android:colorAccent">#5267D9</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
-    <style name="Theme.PinShot.Transparent" parent="Theme.PinShot">
-        <item name="android:windowIsTranslucent">true</item>
-        <item name="android:windowBackground">@android:color/transparent</item>
-        <item name="android:backgroundDimEnabled">false</item>
-        <item name="android:windowNoTitle">true</item>
-    </style>
 </resources>

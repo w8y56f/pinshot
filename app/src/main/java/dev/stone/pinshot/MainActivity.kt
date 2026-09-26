@@ -41,6 +41,7 @@ class MainActivity : AppCompatActivity() {
     private var resumed = false
     private var handedOff = false
     private var textPinInProgress = false
+    private var permissionPromptShown = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -225,9 +226,7 @@ class MainActivity : AppCompatActivity() {
         permission.addView(status)
         permissionButton = Button(this).apply {
             text = "允许显示在其他应用上层"
-            setOnClickListener {
-                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-            }
+            setOnClickListener { openOverlaySettings() }
         }
         permission.addView(permissionButton)
         setContentView(root)
@@ -255,6 +254,7 @@ class MainActivity : AppCompatActivity() {
         cameraFile = savedInstanceState?.getString("cameraFile")?.let(::File)
 
         handedOff = savedInstanceState?.getBoolean("handedOff") ?: false
+        permissionPromptShown = savedInstanceState?.getBoolean("permissionPromptShown") ?: false
         pendingImage = savedInstanceState?.getString("pendingImage")?.let(::File)?.takeIf { it.isFile }
         if (handedOff) {
             finish()
@@ -427,16 +427,42 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         resumed = true
-        permissionButton.visibility = if (Settings.canDrawOverlays(this)) View.GONE else View.VISIBLE
-        if (intent.action != Intent.ACTION_SEND) {
-            status.text = if (Settings.canDrawOverlays(this)) "已就绪，可以从截图或相册分享图片到钉图。" else "首次使用请先允许悬浮窗。"
+        val allowed = Settings.canDrawOverlays(this)
+        permissionButton.visibility = if (allowed) View.GONE else View.VISIBLE
+        if (allowed) permissionPromptShown = false
+        if (pendingImage == null && intent.action != Intent.ACTION_SEND && !textPinInProgress) {
+            status.text = if (allowed) "已就绪，可以从截图或相册分享图片到钉图。" else "请允许悬浮窗后再钉图。"
         }
         pinIfReady()
     }
 
+    private fun openOverlaySettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+        } catch (_: android.content.ActivityNotFoundException) {
+            showTextMessage("无法打开权限设置，请在系统设置中允许 PinShot 显示悬浮窗。")
+        }
+    }
+
     private fun pinIfReady() {
         val file = pendingImage ?: return
-        if (!resumed || handedOff || !Settings.canDrawOverlays(this)) return
+        if (!resumed || handedOff) return
+        if (!Settings.canDrawOverlays(this)) {
+            status.text = "图片已准备好，但尚未允许悬浮窗。授权后返回即可自动钉图。"
+            permissionButton.visibility = View.VISIBLE
+            // Explain the blocked action even when the permission card is below the screen.
+            // Do not repeatedly prompt when returning from Settings without granting access.
+            if (!permissionPromptShown) {
+                permissionPromptShown = true
+                AlertDialog.Builder(this)
+                    .setTitle("允许悬浮窗后即可钉图")
+                    .setMessage("请在系统设置中允许 PinShot 显示在其他应用上层。图片已保留，授权后返回会自动钉图。")
+                    .setPositiveButton("去授权") { _, _ -> openOverlaySettings() }
+                    .setNegativeButton("稍后", null)
+                    .show()
+            }
+            return
+        }
         startService(Intent(this, OverlayService::class.java).putExtra(OverlayService.IMAGE_PATH, file.absolutePath))
         handedOff = true
         pendingImage = null
@@ -452,6 +478,7 @@ class MainActivity : AppCompatActivity() {
         outState.putString("cameraFile", cameraFile?.absolutePath)
         outState.putString("pendingImage", pendingImage?.absolutePath)
         outState.putBoolean("handedOff", handedOff)
+        outState.putBoolean("permissionPromptShown", permissionPromptShown)
         super.onSaveInstanceState(outState)
     }
 

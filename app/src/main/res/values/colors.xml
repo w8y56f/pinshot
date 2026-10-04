@@ -1,3 +1,4 @@
 <resources>
     <color name="icon_background">#4C6090</color>
+    <color name="home_action_background">#E8EDF7</color>
 </resources>

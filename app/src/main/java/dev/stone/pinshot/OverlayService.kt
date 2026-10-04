@@ -27,10 +27,13 @@ import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.ArrayAdapter
 import android.widget.ImageView
+import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.FileProvider
 import java.io.File
@@ -438,15 +441,28 @@ class OverlayService : Service() {
 
     private fun showActions(pin: Pin) {
         if (actionDialog?.isShowing == true) return
+        val actions = arrayOf("关闭", "逆时针旋转", "保存", "分享")
         val dialog = AlertDialog.Builder(this)
             .setTitle("钉图操作")
-            .setItems(arrayOf("关闭", "逆时针旋转", "保存", "分享"), null)
+            .setItems(actions, null)
             .setNegativeButton("取消", null)
             .create()
         actionDialog = dialog
         dialog.setOnDismissListener { if (actionDialog === dialog) actionDialog = null }
         dialog.window?.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
         dialog.show()
+        // The ListView selector covers the full row and receives native press/hotspot states.
+        dialog.listView.setSelector(R.drawable.pin_action_feedback)
+        val actionColors = dialog.getButton(AlertDialog.BUTTON_NEGATIVE).textColors
+        dialog.listView.adapter = object : ArrayAdapter<String>(
+            dialog.context, android.R.layout.simple_list_item_1, actions
+        ) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                return (super.getView(position, convertView, parent) as TextView).apply {
+                    setTextColor(actionColors)
+                }
+            }
+        }
         var rotationCount = 0
         // Replace AlertDialog's default item listener, which dismisses after every tap.
         dialog.listView.setOnItemClickListener { _, view, which, _ ->

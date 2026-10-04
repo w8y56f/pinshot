@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
+import android.view.MotionEvent
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
@@ -28,6 +29,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.widget.doAfterTextChanged
 import java.io.File
 import kotlin.concurrent.thread
 import kotlin.math.max
@@ -46,9 +48,21 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        // Let the header and bottom inset show the icon's blue behind the system bars.
+        @Suppress("DEPRECATION")
+        window.apply {
+            statusBarColor = Color.TRANSPARENT
+            navigationBarColor = Color.TRANSPARENT
+            isNavigationBarContrastEnforced = false
+        }
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
-        val accent = Color.rgb(0, 157, 187)
+        val accent = getColor(R.color.icon_background)
+        val actionBackground = getColor(R.color.home_action_background)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(accent)
@@ -63,7 +77,8 @@ class MainActivity : AppCompatActivity() {
                 setTextColor(Color.WHITE)
             })
             addView(TextView(this@MainActivity).apply {
-                text = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
+                val suffix = if (BuildConfig.DEBUG && BuildConfig.GIT_DIRTY) "-dirty" else ""
+                text = "${BuildConfig.VERSION_NAME} (${BuildConfig.GIT_COMMIT}$suffix)"
                 textSize = 14f
                 setTextColor(Color.WHITE)
                 alpha = .8f
@@ -129,6 +144,7 @@ class MainActivity : AppCompatActivity() {
             setTextColor(accent)
             setPadding(0, 0, 0, dp(12))
         })
+        val textDraft = getSharedPreferences("text_draft", MODE_PRIVATE)
         val textInput = EditText(this).apply {
             hint = "输入文字…"
             textSize = 17f
@@ -137,12 +153,38 @@ class MainActivity : AppCompatActivity() {
             inputType = android.text.InputType.TYPE_CLASS_TEXT or
                 android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                 android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            setHorizontallyScrolling(false)
+            isVerticalScrollBarEnabled = true
+            isScrollbarFadingEnabled = false
+            scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
+            verticalScrollbarThumbDrawable = GradientDrawable().apply {
+                setColor(accent)
+                cornerRadius = dp(2).toFloat()
+                setSize(dp(3), dp(24))
+            }
+            // Keep the outer page from intercepting drags through overflowing text.
+            setOnTouchListener { view, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> view.parent.requestDisallowInterceptTouchEvent(
+                        view.canScrollVertically(-1) || view.canScrollVertically(1)
+                    )
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                        view.parent.requestDisallowInterceptTouchEvent(false)
+                }
+                false
+            }
             gravity = android.view.Gravity.TOP or android.view.Gravity.START
             setPadding(dp(12), dp(12), dp(12), dp(12))
             background = GradientDrawable().apply {
                 setColor(Color.rgb(247, 249, 251))
                 setStroke(dp(1), Color.rgb(207, 222, 228))
                 cornerRadius = dp(12).toFloat()
+            }
+            setText(textDraft.getString("text", ""))
+            setSelection(text.length)
+            // Persist edits even when pinning finishes this Activity and the app is reopened.
+            doAfterTextChanged { value ->
+                textDraft.edit().putString("text", value?.toString().orEmpty()).apply()
             }
         }
         textCard.addView(textInput, LinearLayout.LayoutParams(-1, -2))
@@ -160,7 +202,7 @@ class MainActivity : AppCompatActivity() {
                 text = label
                 textSize = 16f
                 setTextColor(accent)
-                backgroundTintList = android.content.res.ColorStateList.valueOf(Color.rgb(226, 247, 250))
+                backgroundTintList = android.content.res.ColorStateList.valueOf(actionBackground)
                 setOnClickListener { action() }
             }, LinearLayout.LayoutParams(0, dp(52), 1f))
         }
@@ -195,7 +237,7 @@ class MainActivity : AppCompatActivity() {
                 text = label
                 textSize = 17f
                 setTextColor(accent)
-                backgroundTintList = android.content.res.ColorStateList.valueOf(Color.rgb(226, 247, 250))
+                backgroundTintList = android.content.res.ColorStateList.valueOf(actionBackground)
                 setOnClickListener { action() }
             }, LinearLayout.LayoutParams(0, dp(56), 1f).apply {
                 marginStart = dp(4)

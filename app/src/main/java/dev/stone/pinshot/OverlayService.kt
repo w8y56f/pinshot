@@ -20,6 +20,7 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.IBinder
+import android.os.ResultReceiver
 import android.provider.MediaStore
 import android.provider.Settings
 import android.view.Choreographer
@@ -38,17 +39,27 @@ import android.widget.Toast
 import androidx.core.content.FileProvider
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.Executors
 import kotlin.math.max
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.roundToInt
 
 class OverlayService : Service() {
-    companion object { const val IMAGE_PATH = "image_path" }
+    companion object {
+        const val IMAGE_PATH = "image_path"
+        const val PIN_RESULT = "pin_result"
+        const val PIN_CREATED = 0
+        private const val PIN_FAILED = 1
+    }
 
     private lateinit var windowManager: WindowManager
     private val pins = mutableListOf<Pin>()
     private var actionDialog: AlertDialog? = null
+    private val decoder = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var pendingImports = 0
+    private var importGeneration = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -61,30 +72,51 @@ class OverlayService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        @Suppress("DEPRECATION")
+        val receiver = intent?.getParcelableExtra<ResultReceiver>(PIN_RESULT)
         val file = intent?.getStringExtra(IMAGE_PATH)?.let(::File)
         if (!Settings.canDrawOverlays(this)) {
             file?.delete()
             Toast.makeText(this, "请先允许显示在其他应用上层", Toast.LENGTH_LONG).show()
-            if (pins.isEmpty()) stopSelfResult(startId)
+            receiver?.send(PIN_FAILED, null)
+            if (pins.isEmpty() && pendingImports == 0) stopSelfResult(startId)
             return START_NOT_STICKY
         }
 
-        val bitmap = file?.let { BitmapFactory.decodeFile(it.path) }
-        file?.delete()
-        if (bitmap == null) {
-            Toast.makeText(this, "图片无法显示，请重新分享", Toast.LENGTH_SHORT).show()
-            if (pins.isEmpty()) stopSelfResult(startId)
-            return START_NOT_STICKY
-        }
-
-        val pin = Pin(bitmap, pins.size)
-        try {
-            windowManager.addView(pin.window, pin.params)
-            pins.add(pin)
-        } catch (_: RuntimeException) {
-            bitmap.recycle()
-            Toast.makeText(this, "悬浮窗无法显示，请检查悬浮窗权限", Toast.LENGTH_LONG).show()
-            if (pins.isEmpty()) stopSelfResult(startId)
+        pendingImports++
+        val generation = importGeneration
+        decoder.execute {
+            val bitmap = try {
+                file?.let { BitmapFactory.decodeFile(it.path) }
+            } catch (_: Exception) {
+                null
+            } catch (_: OutOfMemoryError) {
+                null
+            } finally {
+                file?.delete()
+            }
+            mainHandler.post {
+                pendingImports--
+                if (generation != importGeneration) {
+                    bitmap?.recycle()
+                    receiver?.send(PIN_FAILED, null)
+                } else if (bitmap == null) {
+                    Toast.makeText(this, "图片无法显示，请重新分享", Toast.LENGTH_SHORT).show()
+                    receiver?.send(PIN_FAILED, null)
+                } else {
+                    try {
+                        val pin = Pin(bitmap, pins.size)
+                        windowManager.addView(pin.window, pin.params)
+                        pins.add(pin)
+                        receiver?.send(PIN_CREATED, null)
+                    } catch (_: RuntimeException) {
+                        bitmap.recycle()
+                        Toast.makeText(this, "悬浮窗无法显示，请检查悬浮窗权限", Toast.LENGTH_LONG).show()
+                        receiver?.send(PIN_FAILED, null)
+                    }
+                }
+                if (pins.isEmpty() && pendingImports == 0) stopSelfResult(startId)
+            }
         }
         return START_NOT_STICKY
     }
@@ -92,7 +124,7 @@ class OverlayService : Service() {
     private inner class Pin(var bitmap: Bitmap, stackIndex: Int) {
         private val density = resources.displayMetrics.density
         private val minSide = 48f * density
-        private val minimumVisibleSize = 30f * density
+        private val minimumVisibleSize = 35f * density
         private val aspectRatio get() = bitmap.width.toFloat() / bitmap.height
         private val minWidth get() = minSide * max(1f, aspectRatio)
         private val maxWidth get() = minOf(
@@ -538,7 +570,7 @@ class OverlayService : Service() {
 
     private fun showActions(pin: Pin) {
         if (actionDialog?.isShowing == true) return
-        val actions = arrayOf("关闭", "逆时针旋转", "保存", "分享")
+        val actions = arrayOf("关闭", "逆时针旋转", "保存", "分享", "关闭所有")
         val dialog = AlertDialog.Builder(this)
             .setTitle("钉图操作")
             .setItems(actions, null)
@@ -568,7 +600,7 @@ class OverlayService : Service() {
                     dialog.dismiss()
                     pin.remove()
                     pins.remove(pin)
-                    if (pins.isEmpty()) stopSelf()
+                    if (pins.isEmpty() && pendingImports == 0) stopSelf()
                 }
                 1 -> if (pin.rotateCounterclockwise()) {
                     rotationCount++
@@ -583,11 +615,19 @@ class OverlayService : Service() {
                     dialog.dismiss()
                     pin.share()
                 }
+                4 -> {
+                    dialog.dismiss()
+                    importGeneration++
+                    pins.forEach { it.remove() }
+                    pins.clear()
+                    if (pendingImports == 0) stopSelf()
+                }
             }
         }
     }
 
     override fun onDestroy() {
+        decoder.shutdownNow()
         actionDialog?.dismiss()
         actionDialog = null
         pins.forEach { it.remove() }

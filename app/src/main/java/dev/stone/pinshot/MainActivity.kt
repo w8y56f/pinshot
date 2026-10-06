@@ -11,10 +11,12 @@ import android.provider.MediaStore
 import android.widget.ScrollView
 import androidx.core.content.FileProvider
 import android.graphics.Bitmap
-import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.ResultReceiver
 import android.provider.Settings
 import android.view.View
 import android.view.MotionEvent
@@ -29,21 +31,26 @@ import androidx.appcompat.app.AlertDialog
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import androidx.core.widget.doAfterTextChanged
 import java.io.File
+import java.util.UUID
 import kotlin.concurrent.thread
-import kotlin.math.max
 
 /** Receives one shared image and keeps its own copy before requesting overlay permission. */
 class MainActivity : AppCompatActivity() {
+    companion object {
+        private val processSession = UUID.randomUUID().toString()
+    }
+
     private lateinit var status: TextView
     private lateinit var permissionButton: Button
+    private lateinit var textInput: EditText
     private var pendingImage: File? = null
     private var cameraFile: File? = null
     private var resumed = false
     private var handedOff = false
     private var textPinInProgress = false
     private var permissionPromptShown = false
+    private val processingDialog = ProcessingDialog(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -144,8 +151,14 @@ class MainActivity : AppCompatActivity() {
             setTextColor(accent)
             setPadding(0, 0, 0, dp(12))
         })
-        val textDraft = getSharedPreferences("text_draft", MODE_PRIVATE)
-        val textInput = EditText(this).apply {
+        // Remove drafts written by older versions. The editor now lives only in this process.
+        deleteSharedPreferences("text_draft")
+        val draft = if (savedInstanceState?.getString("draftSession") == processSession) {
+            savedInstanceState.getString("draftText").orEmpty()
+        } else {
+            ""
+        }
+        textInput = EditText(this).apply {
             hint = "输入文字…"
             textSize = 17f
             minLines = 3
@@ -180,12 +193,8 @@ class MainActivity : AppCompatActivity() {
                 setStroke(dp(1), Color.rgb(207, 222, 228))
                 cornerRadius = dp(12).toFloat()
             }
-            setText(textDraft.getString("text", ""))
+            setText(draft)
             setSelection(text.length)
-            // Persist edits even when pinning finishes this Activity and the app is reopened.
-            doAfterTextChanged { value ->
-                textDraft.edit().putString("text", value?.toString().orEmpty()).apply()
-            }
         }
         textCard.addView(textInput, LinearLayout.LayoutParams(-1, -2))
         val textActions = LinearLayout(this).apply {
@@ -427,26 +436,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun importImage(uri: Uri) {
         status.text = "正在读取图片…"
+        processingDialog.show()
         thread(name = "ImportSharedImage") {
-            var file: File? = null
             try {
-                val bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(contentResolver, uri)) { decoder, info, _ ->
-                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-                    val longest = max(info.size.width, info.size.height)
-                    if (longest > 4096) {
-                        decoder.setTargetSize(
-                            max(1, (info.size.width * 4096L / longest).toInt()),
-                            max(1, (info.size.height * 4096L / longest).toInt())
-                        )
-                    }
-                }
-                try {
-                    file = File.createTempFile("shared-pin-", ".png", cacheDir)
-                    file.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
-                } finally {
-                    bitmap.recycle()
-                }
-                val imported = file
+                val imported = SharedImageImport.copy(applicationContext, uri)
                 runOnUiThread {
                     if (isDestroyed || isFinishing) {
                         imported?.delete()
@@ -457,9 +450,18 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             } catch (_: Exception) {
-                file?.delete()
                 runOnUiThread {
-                    if (!isDestroyed && !isFinishing) status.text = "图片读取失败，请重新分享图片。"
+                    if (!isDestroyed && !isFinishing) {
+                        processingDialog.dismiss()
+                        showTextMessage("图片读取失败，请重新分享图片。")
+                    }
+                }
+            } catch (_: OutOfMemoryError) {
+                runOnUiThread {
+                    if (!isDestroyed && !isFinishing) {
+                        processingDialog.dismiss()
+                        showTextMessage("内存不足，无法读取图片。")
+                    }
                 }
             }
         }
@@ -489,6 +491,7 @@ class MainActivity : AppCompatActivity() {
         val file = pendingImage ?: return
         if (!resumed) return
         if (!Settings.canDrawOverlays(this)) {
+            processingDialog.dismiss()
             status.text = "图片已准备好，但尚未允许悬浮窗。授权后返回即可自动钉图。"
             permissionButton.visibility = View.VISIBLE
             // Explain the blocked action even when the permission card is below the screen.
@@ -504,10 +507,30 @@ class MainActivity : AppCompatActivity() {
             }
             return
         }
-        startService(Intent(this, OverlayService::class.java).putExtra(OverlayService.IMAGE_PATH, file.absolutePath))
+        processingDialog.show("正在创建钉图…")
+        val receiver = object : ResultReceiver(Handler(Looper.getMainLooper())) {
+            override fun onReceiveResult(resultCode: Int, resultData: Bundle?) {
+                if (isDestroyed || isFinishing) return
+                processingDialog.dismiss()
+                status.text = if (resultCode == OverlayService.PIN_CREATED) {
+                    "已钉到屏幕，可以继续钉图或自行切换到其他应用。"
+                } else {
+                    "钉图失败，请检查悬浮窗权限或重新选择图片。"
+                }
+            }
+        }
+        try {
+            startService(Intent(this, OverlayService::class.java)
+                .putExtra(OverlayService.IMAGE_PATH, file.absolutePath)
+                .putExtra(OverlayService.PIN_RESULT, receiver))
+        } catch (_: RuntimeException) {
+            processingDialog.dismiss()
+            showTextMessage("钉图启动失败，请重试。")
+            return
+        }
         handedOff = true
         pendingImage = null
-        status.text = "已钉到屏幕，可以继续钉图或自行切换到其他应用。"
+        status.text = "正在创建钉图…"
     }
 
     override fun onPause() {
@@ -516,6 +539,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("draftSession", processSession)
+        outState.putString("draftText", textInput.text.toString())
         outState.putString("cameraFile", cameraFile?.absolutePath)
         outState.putString("pendingImage", pendingImage?.absolutePath)
         outState.putBoolean("handedOff", handedOff)
@@ -524,6 +549,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        processingDialog.dismiss()
         if (isFinishing) {
             pendingImage?.delete()
             cameraFile?.delete()

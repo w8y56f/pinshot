@@ -105,10 +105,10 @@ class PinchTransformTest {
         val pinch = PinchTransform(8f)
         pinch.rebase(listOf(point(0, 250f), point(1, 350f)))
         pinch.move(listOf(point(0, 450f), point(1, 550f)), geometry, 48f, 2000f)
-        geometry.constrain(0f, 0f, 300f, 600f, 30f)
-        close(270f, geometry.x)
+        geometry.constrain(0f, 0f, 300f, 600f, 35f)
+        close(265f, geometry.x)
         pinch.move(listOf(point(0, 449f), point(1, 549f)), geometry, 48f, 2000f)
-        geometry.constrain(0f, 0f, 300f, 600f, 30f)
-        close(269f, geometry.x)
+        geometry.constrain(0f, 0f, 300f, 600f, 35f)
+        close(264f, geometry.x)
     }
 }

@@ -7,7 +7,7 @@ import org.junit.Test
 
 class PinGeometryTest {
     private fun close(expected: Float, actual: Float) = assertEquals(expected, actual, .001f)
-    private fun constrain(g: PinGeometry, visible: Float = 30f) =
+    private fun constrain(g: PinGeometry, visible: Float = 35f) =
         g.constrain(10f, 20f, 310f, 620f, visible)
     private fun dragOnly(g: PinGeometry) =
         g.shouldDragInsteadOfResize(10f, 20f, 310f, 620f, 24f)
@@ -16,26 +16,26 @@ class PinGeometryTest {
         for (size in listOf(200f, 2000f)) {
             val left = PinGeometry(-10000f, 100f, size, 1f)
             constrain(left)
-            close(40f, left.x + left.width)
+            close(45f, left.x + left.width)
             val right = PinGeometry(10000f, 100f, size, 1f)
             constrain(right)
-            close(280f, right.x)
+            close(275f, right.x)
             val top = PinGeometry(100f, -10000f, size, 1f)
             constrain(top)
-            close(50f, top.y + top.height)
+            close(55f, top.y + top.height)
             val bottom = PinGeometry(100f, 10000f, size, 1f)
             constrain(bottom)
-            close(590f, bottom.y)
+            close(585f, bottom.y)
         }
     }
 
-    @Test fun allFourCornersKeep30By30Patch() {
+    @Test fun allFourCornersKeep35By35Patch() {
         for (x in listOf(-10000f, 10000f)) {
             for (y in listOf(-10000f, 10000f)) {
                 val g = PinGeometry(x, y, 2000f, 2f)
                 constrain(g)
-                close(30f, minOf(g.x + g.width, 310f) - maxOf(g.x, 10f))
-                close(30f, minOf(g.y + g.height, 620f) - maxOf(g.y, 20f))
+                close(35f, minOf(g.x + g.width, 310f) - maxOf(g.x, 10f))
+                close(35f, minOf(g.y + g.height, 620f) - maxOf(g.y, 20f))
             }
         }
     }
@@ -50,19 +50,19 @@ class PinGeometryTest {
         val narrow = PinGeometry(-10000f, -10000f, 30f, .1f)
         constrain(narrow)
         close(10f, narrow.x)
-        close(50f, narrow.y + narrow.height)
+        close(55f, narrow.y + narrow.height)
     }
 
     @Test fun retentionUsesDensityConvertedPixels() {
         val g = PinGeometry(10000f, 10000f, 2000f, 1f)
-        constrain(g, 30f * 4f)
-        close(190f, g.x)
-        close(500f, g.y)
+        constrain(g, 35f * 4f)
+        close(170f, g.x)
+        close(480f, g.y)
     }
 
     @Test fun safeAreaSmallerThanRetentionRemainsCovered() {
         val g = PinGeometry(-10000f, 10000f, 200f, 1f)
-        g.constrain(10f, 20f, 40f, 45f, 30f)
+        g.constrain(10f, 20f, 40f, 45f, 35f)
         close(40f, g.x + g.width)
         close(20f, g.y)
     }
@@ -70,12 +70,12 @@ class PinGeometryTest {
     @Test fun lastVisibleHandlePatchCanBeDraggedBack() {
         val g = PinGeometry(-10000f, -10000f, 2000f, 2f)
         constrain(g)
-        // The normal 30dp patch still contains drag space beside the handle.
+        // The normal 35dp patch still contains drag space beside the handle.
         assertFalse(dragOnly(g))
         // A smaller reachable area can still leave only the handle exposed.
         g.x = -10000f
         g.y = -10000f
-        g.constrain(10f, 20f, 30f, 40f, 30f)
+        g.constrain(10f, 20f, 30f, 40f, 35f)
         assertTrue(g.shouldDragInsteadOfResize(10f, 20f, 30f, 40f, 24f))
     }
 

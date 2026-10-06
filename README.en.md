@@ -11,7 +11,7 @@
 ## Screenshots
 
 <div align="center">
-  <img src="docs/images/pinshot-home.jpg" alt="PinShot 0.9.0 home screen" width="360" />
+  <img src="docs/images/pinshot-home.jpg" alt="PinShot home screen" width="360" />
 </div>
 
 ## Features
@@ -19,7 +19,7 @@
 - **Pin images:** Choose a photo, take a picture, or share an image from another app to PinShot. Adjust the crop and pin it on screen.
 - **Pin text:** Turn clipboard text or text you enter into a floating note.
 - **Move and resize:** Drag a pinned image to move it, or drag its lower-right handle to resize it proportionally. Images can be moved partly off-screen and dragged back later.
-- **Image actions:** Double-tap a floating image to close, rotate counterclockwise, save it to your gallery, or share it through Android's system share sheet.
+- **Image actions:** Double-tap a floating image to close it or all images, rotate it counterclockwise, save it to your gallery, or share it through Android's system share sheet.
 - **Multiple pinned images:** Sharing another image adds a new floating image while keeping existing ones.
 - **Sharing guide:** An in-app guide explains how to make PinShot available in the OriginOS image share sheet.
 
@@ -29,7 +29,7 @@
 
 1. Select an image in Gallery, a screenshot preview, or another app, then tap **Share**.
 2. Choose **PinShot** in the share sheet.
-3. The first time, allow PinShot to **Display over other apps**. Return to PinShot and the image will appear as a floating window.
+3. A progress indicator appears while the image is processed, then the image floats over the source app. The first time, allow PinShot to **Display over other apps**.
 
 You can also tap **Gallery** on the PinShot home screen to choose an image, or **Camera** to take one. Adjust the crop and tap ✓ to pin it.
 
@@ -44,7 +44,7 @@ You can also tap **Gallery** on the PinShot home screen to choose an image, or *
 
 - Drag the image with one finger to move it.
 - Drag the lower-right handle to resize it proportionally.
-- Double-tap the image to open its actions: close, rotate counterclockwise, save, or share.
+- Double-tap the image to open its actions: close the current image, close all images, rotate, save, or share.
 - Share another image to add an additional floating image.
 
 ## Requirements
@@ -70,4 +70,4 @@ PinShot needs the **Display over other apps** permission to show floating images
 
 ## Version
 
-Current project version: **0.9.0**.
+Current project version: **1.0.0**.

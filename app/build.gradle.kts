@@ -32,8 +32,8 @@ android {
         applicationId = "dev.stone.pinshot"
         minSdk = 30
         targetSdk = 36
-        versionCode = 900
-        versionName = "0.9.0"
+        versionCode = 1000
+        versionName = "1.0.0"
         buildConfigField("String", "GIT_COMMIT", "\"$gitCommit\"")
     }
 

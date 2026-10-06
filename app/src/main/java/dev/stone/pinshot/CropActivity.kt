@@ -26,6 +26,7 @@ class CropActivity : AppCompatActivity() {
     private lateinit var confirm: Button
     private lateinit var title: TextView
     private var saving = false
+    private val processingDialog = ProcessingDialog(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -78,6 +79,7 @@ class CropActivity : AppCompatActivity() {
             insets
         }
         val uri = intent.data ?: run { finish(); return }
+        processingDialog.show()
         thread(name = "LoadCropImage") {
             try {
                 val bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(contentResolver, uri)) { decoder, info, _ ->
@@ -89,6 +91,7 @@ class CropActivity : AppCompatActivity() {
                 }
                 runOnUiThread {
                     if (isDestroyed || isFinishing) bitmap.recycle() else {
+                        processingDialog.dismiss()
                         crop.bitmap = bitmap
                         crop.invalidate()
                         title.text = "裁剪"
@@ -99,6 +102,7 @@ class CropActivity : AppCompatActivity() {
             } catch (_: Exception) {
                 runOnUiThread {
                     if (!isDestroyed && !isFinishing) {
+                        processingDialog.dismiss()
                         Toast.makeText(this, "图片读取失败，请重新选择", Toast.LENGTH_LONG).show()
                         finish()
                     }
@@ -115,6 +119,7 @@ class CropActivity : AppCompatActivity() {
         crop.isEnabled = false
         confirm.isEnabled = false
         title.text = "正在生成钉图…"
+        processingDialog.show()
         thread(name = "SaveCropImage") {
             var file: File? = null
             try {
@@ -132,6 +137,7 @@ class CropActivity : AppCompatActivity() {
                 val output = file
                 runOnUiThread {
                     if (isDestroyed || isFinishing) output?.delete() else {
+                        processingDialog.dismiss()
                         setResult(RESULT_OK, Intent().putExtra(OverlayService.IMAGE_PATH, output?.absolutePath))
                         finish()
                     }
@@ -140,6 +146,7 @@ class CropActivity : AppCompatActivity() {
                 file?.delete()
                 runOnUiThread {
                     if (!isDestroyed && !isFinishing) {
+                        processingDialog.dismiss()
                         saving = false
                         crop.isEnabled = true
                         confirm.isEnabled = true
@@ -149,6 +156,11 @@ class CropActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        processingDialog.dismiss()
+        super.onDestroy()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

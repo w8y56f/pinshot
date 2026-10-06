@@ -14,7 +14,8 @@ import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.PixelFormat
-import android.graphics.drawable.GradientDrawable
+import android.graphics.RectF
+import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
@@ -32,13 +33,14 @@ import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ArrayAdapter
-import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.FileProvider
 import java.io.File
 import java.util.UUID
 import kotlin.math.max
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.roundToInt
 
 class OverlayService : Service() {
@@ -88,113 +90,212 @@ class OverlayService : Service() {
     }
 
     private inner class Pin(var bitmap: Bitmap, stackIndex: Int) {
-        val image = ImageView(this@OverlayService).apply {
-            setImageBitmap(bitmap)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            background = GradientDrawable().apply {
-                setColor(Color.TRANSPARENT)
-                setStroke(2, Color.argb(120, 255, 255, 255))
-                cornerRadius = 10f
-            }
-        }
-        val window = FrameLayout(this@OverlayService).apply {
-            addView(image, FrameLayout.LayoutParams(-1, -1))
-        }
-
-        private val aspectRatio get() = bitmap.width.toFloat() / bitmap.height
         private val density = resources.displayMetrics.density
         private val minSide = 48f * density
+        private val minimumVisibleSize = 30f * density
+        private val aspectRatio get() = bitmap.width.toFloat() / bitmap.height
         private val minWidth get() = minSide * max(1f, aspectRatio)
         private val maxWidth get() = minOf(
             resources.displayMetrics.widthPixels * 4f,
             resources.displayMetrics.heightPixels * 4f * aspectRatio
         ).coerceAtLeast(minWidth)
+        private val geometry: PinGeometry
+        private val pinch = PinchTransform(8f * density)
         private val choreographer = Choreographer.getInstance()
         private var frameScheduled = false
         private var removed = false
-        private var targetWidth: Float
+        private var expanded = false
+        private var gestureActive = false
+        private var multiTouchGesture = false
+        private var handleGesture = false
+        private var lastTouch: PinTouch? = null
+        private val screenLocation = IntArray(2)
+        private val bitmapMatrix = Matrix()
+        private val imageBounds = RectF()
+        private val reachableBounds = RectF()
+        private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(120, 255, 255, 255)
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+        }
+        private val handleSize = (24 * density).roundToInt()
+        private val handle = ResizeHandleView(this@OverlayService)
+        private val image = object : View(this@OverlayService) {
+            private var drawnOriginX = Int.MIN_VALUE
+            private var drawnOriginY = Int.MIN_VALUE
 
+            fun invalidateIfOriginChanged() {
+                getLocationOnScreen(screenLocation)
+                if (drawnOriginX != screenLocation[0] || drawnOriginY != screenLocation[1]) {
+                    invalidate()
+                }
+            }
+
+            override fun onDraw(canvas: Canvas) {
+                if (removed) return
+                // Read the actual origin: a WindowManager relayout may still be pending.
+                getLocationOnScreen(screenLocation)
+                drawnOriginX = screenLocation[0]
+                drawnOriginY = screenLocation[1]
+                val x = geometry.x - screenLocation[0]
+                val y = geometry.y - screenLocation[1]
+                bitmapMatrix.setScale(geometry.width / bitmap.width, geometry.height / bitmap.height)
+                bitmapMatrix.postTranslate(x, y)
+                canvas.drawBitmap(bitmap, bitmapMatrix, bitmapPaint)
+                imageBounds.set(x + 1f, y + 1f, x + geometry.width - 1f, y + geometry.height - 1f)
+                canvas.drawRoundRect(imageBounds, 10f, 10f, borderPaint)
+            }
+        }
+        val window = object : FrameLayout(this@OverlayService) {
+            // One event stream, including fingers initially landing on the handle.
+            override fun onInterceptTouchEvent(event: MotionEvent) = true
+        }.apply {
+            isMotionEventSplittingEnabled = false
+            addView(image, FrameLayout.LayoutParams(-1, -1))
+            addView(handle, FrameLayout.LayoutParams(handleSize, handleSize, Gravity.TOP or Gravity.LEFT))
+        }
         val params: WindowManager.LayoutParams
 
         init {
-            val factor = minOf(
-                1f,
-                resources.displayMetrics.widthPixels * .65f / bitmap.width,
-                resources.displayMetrics.heightPixels * .65f / bitmap.height
-            )
-            val width = max(1, (bitmap.width * factor).roundToInt())
-            val height = max(1, (bitmap.height * factor).roundToInt())
-            targetWidth = width.toFloat()
+            val factor = minOf(1f, resources.displayMetrics.widthPixels * .65f / bitmap.width,
+                resources.displayMetrics.heightPixels * .65f / bitmap.height)
+            val width = max(1f, bitmap.width * factor)
             val offset = stackIndex.coerceAtMost(8)
+            geometry = PinGeometry(
+                (resources.displayMetrics.widthPixels - width) / 2f + offset * 20 * density,
+                (48 + offset * 28) * density, width, aspectRatio)
             params = WindowManager.LayoutParams(
-                width, height, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                1, 1, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.LEFT
-                // Use display coordinates; keepReachable applies system-bar insets itself.
+                // Geometry and raw touches use display coordinates. Disabling inset fitting
+                // alone does not remove the cutout-safe parent origin (e.g. +128px at top),
+                // which otherwise shifts the tight window and clips the bitmap inside it.
                 setFitInsetsTypes(0)
-                x = ((resources.displayMetrics.widthPixels - width) / 2f + offset * 20 * density).roundToInt()
-                y = ((48 + offset * 28) * density).roundToInt()
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                // Expanding/collapsing the surface must not animate its screen origin:
+                // the bitmap already compensates for that origin in the same frame.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    setCanPlayMoveAnimation(false)
+                }
             }
-            keepReachable()
+            refreshReachableBounds()
+            constrainGeometry()
+            setWindowBounds()
+            // Surface changes and model changes use the same screen-space geometry.
+            window.viewTreeObserver.addOnPreDrawListener {
+                // Relayout can change the origin after renderGeometry() invalidated the view.
+                // Do not reuse a display list recorded relative to the old window position.
+                image.invalidateIfOriginChanged()
+                positionHandle()
+                true
+            }
             installGestures()
-            installResizeHandle()
         }
 
         private val frameCallback = Choreographer.FrameCallback {
             frameScheduled = false
-            if (removed) return@FrameCallback
-            val width = targetWidth.roundToInt()
-            val height = (targetWidth / aspectRatio).roundToInt().coerceAtLeast(1)
-            if (width != params.width || height != params.height) {
-                // The resize handle changes size while keeping the top-left corner fixed.
-                params.width = width
-                params.height = height
-                updateLayout()
-            }
+            if (!removed) renderGeometry()
         }
 
-        private fun scheduleScaleLayout() {
+        private fun scheduleFrame() {
             if (!frameScheduled && !removed) {
                 frameScheduled = true
                 choreographer.postFrameCallback(frameCallback)
             }
         }
 
-        private fun keepReachable() {
+        private fun refreshReachableBounds() {
             val metrics = windowManager.currentWindowMetrics
             val bars = metrics.windowInsets.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars())
-            val margin = (8 * density).roundToInt()
-            val left = metrics.bounds.left + bars.left + margin
-            val top = metrics.bounds.top + bars.top + margin
-            val right = metrics.bounds.right - bars.right - margin
-            val bottom = metrics.bounds.bottom - bars.bottom - margin
-            // Symmetric limits: leave one quarter of each dimension reachable on any edge.
-            // Very large images cannot expose more than the available display area.
-            val visibleWidth = ((params.width + 3) / 4).coerceAtMost((right - left).coerceAtLeast(1))
-            val visibleHeight = ((params.height + 3) / 4).coerceAtMost((bottom - top).coerceAtLeast(1))
-            params.x = params.x.coerceIn(left - params.width + visibleWidth, right - visibleWidth)
-            params.y = params.y.coerceIn(top - params.height + visibleHeight, bottom - visibleHeight)
+            val margin = 8 * density
+            reachableBounds.set(metrics.bounds.left + bars.left + margin,
+                metrics.bounds.top + bars.top + margin,
+                metrics.bounds.right - bars.right - margin,
+                metrics.bounds.bottom - bars.bottom - margin)
         }
 
-        private fun updateLayout() {
-            keepReachable()
-            if (!removed && window.isAttachedToWindow) {
+        private fun constrainGeometry() {
+            geometry.constrain(reachableBounds.left, reachableBounds.top,
+                reachableBounds.right, reachableBounds.bottom, minimumVisibleSize)
+        }
+
+        private fun setWindowBounds() {
+            if (expanded) {
+                val bounds = windowManager.currentWindowMetrics.bounds
+                params.x = bounds.left
+                params.y = bounds.top
+                params.width = bounds.width()
+                params.height = bounds.height()
+            } else {
+                params.x = floor(geometry.x).toInt()
+                params.y = floor(geometry.y).toInt()
+                params.width = (ceil(geometry.x + geometry.width).toInt() - params.x).coerceAtLeast(1)
+                params.height = (ceil(geometry.y + geometry.height).toInt() - params.y).coerceAtLeast(1)
+            }
+        }
+
+        private fun positionHandle() {
+            window.getLocationOnScreen(screenLocation)
+            handle.translationX = geometry.x + geometry.width - screenLocation[0] - handleSize
+            handle.translationY = geometry.y + geometry.height - screenLocation[1] - handleSize
+        }
+
+        private fun renderGeometry() {
+            // While expanded, only redraw the bitmap matrix. No per-frame window relayout.
+            if (!expanded) updateWindowBounds()
+            positionHandle()
+            image.invalidate()
+        }
+
+        private fun updateWindowBounds() {
+            val x = params.x
+            val y = params.y
+            val width = params.width
+            val height = params.height
+            setWindowBounds()
+            if (window.isAttachedToWindow &&
+                (x != params.x || y != params.y || width != params.width || height != params.height)) {
                 windowManager.updateViewLayout(window, params)
             }
         }
 
-        fun ensureReachable() = updateLayout()
+        private fun beginPinch() {
+            if (expanded) return
+            // Older Android versions cannot disable window move animations through public API.
+            // Keep the tight surface there, avoiding a large origin jump at both gesture edges.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
+            expanded = true
+            updateWindowBounds()
+            image.invalidate()
+        }
+
+        private fun endGesture() {
+            gestureActive = false
+            lastTouch = null
+            pinch.rebase(emptyList())
+            if (frameScheduled) {
+                choreographer.removeFrameCallback(frameCallback)
+                frameScheduled = false
+            }
+            expanded = false
+            constrainGeometry()
+            renderGeometry()
+        }
+
+        fun ensureReachable() {
+            // Display rotation invalidates touch coordinates. Ignore this stream until next DOWN.
+            refreshReachableBounds()
+            endGesture()
+        }
 
         private fun installGestures() {
-            var startX = 0
-            var startY = 0
-            var originX = 0
-            var originY = 0
-            var dragging = false
-
             val taps = GestureDetector(this@OverlayService,
                 object : GestureDetector.SimpleOnGestureListener() {
                     override fun onDoubleTap(e: MotionEvent): Boolean {
@@ -202,64 +303,66 @@ class OverlayService : Service() {
                         return true
                     }
                 })
-
-            image.setOnTouchListener { _: View, event: MotionEvent ->
-                taps.onTouchEvent(event)
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        startX = event.rawX.roundToInt()
-                        startY = event.rawY.roundToInt()
-                        originX = params.x
-                        originY = params.y
-                        dragging = true
-                    }
-                    MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> dragging = false
-                    MotionEvent.ACTION_MOVE -> if (dragging && event.pointerCount == 1) {
-                        val currentX = event.rawX.roundToInt()
-                        val currentY = event.rawY.roundToInt()
-                        val proposedX = originX + currentX - startX
-                        val proposedY = originY + currentY - startY
-                        params.x = proposedX
-                        params.y = proposedY
-                        updateLayout()
-                        if (params.x != proposedX) {
-                            originX = params.x
-                            startX = currentX
-                        }
-                        if (params.y != proposedY) {
-                            originY = params.y
-                            startY = currentY
-                        }
-                    }
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> dragging = false
+            window.setOnTouchListener { _, event ->
+                if (removed) return@setOnTouchListener true
+                val points = (0 until event.pointerCount).map {
+                    PinTouch(event.getPointerId(it), event.getRawX(it), event.getRawY(it))
                 }
-                true
-            }
-        }
-
-        private fun installResizeHandle() {
-            val size = (48 * density).roundToInt()
-            val handle = ResizeHandleView(this@OverlayService)
-            window.addView(handle, FrameLayout.LayoutParams(size, size, Gravity.END or Gravity.BOTTOM))
-
-            var lastX = 0f
-            var lastY = 0f
-            handle.setOnTouchListener { _, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
-                        lastX = event.rawX
-                        lastY = event.rawY
+                        refreshReachableBounds()
+                        gestureActive = true
+                        multiTouchGesture = false
+                        val p = points.first()
+                        lastTouch = p
+                        handleGesture = geometry.isInResizeHandle(p.x, p.y, handleSize.toFloat()) &&
+                            !geometry.shouldDragInsteadOfResize(reachableBounds.left, reachableBounds.top,
+                                reachableBounds.right, reachableBounds.bottom, handleSize.toFloat())
+                        if (!handleGesture) taps.onTouchEvent(event)
                     }
-                    MotionEvent.ACTION_MOVE -> {
-                        val dx = event.rawX - lastX
-                        val dy = event.rawY - lastY
-                        lastX = event.rawX
-                        lastY = event.rawY
-                        val heightPerWidth = 1f / aspectRatio
-                        val widthChange = (dx + dy * heightPerWidth) /
-                            (1f + heightPerWidth * heightPerWidth)
-                        targetWidth = (targetWidth + widthChange).coerceIn(minWidth, maxWidth)
-                        scheduleScaleLayout()
+                    MotionEvent.ACTION_POINTER_DOWN -> if (gestureActive) {
+                        if (!multiTouchGesture) {
+                            val cancel = MotionEvent.obtain(event)
+                            cancel.action = MotionEvent.ACTION_CANCEL
+                            taps.onTouchEvent(cancel)
+                            cancel.recycle()
+                        }
+                        multiTouchGesture = true
+                        handleGesture = false
+                        pinch.rebase(points)
+                        beginPinch()
+                    }
+                    MotionEvent.ACTION_MOVE -> if (gestureActive) {
+                        if (!multiTouchGesture && !handleGesture) taps.onTouchEvent(event)
+                        if (points.size >= 2) {
+                            pinch.move(points, geometry, minWidth, maxWidth)
+                        } else {
+                            val p = points.first()
+                            lastTouch?.takeIf { it.id == p.id }?.let { previous ->
+                                val dx = p.x - previous.x
+                                val dy = p.y - previous.y
+                                if (handleGesture) {
+                                    val heightPerWidth = 1f / aspectRatio
+                                    geometry.width = (geometry.width + (dx + dy * heightPerWidth) /
+                                        (1f + heightPerWidth * heightPerWidth)).coerceIn(minWidth, maxWidth)
+                                } else {
+                                    geometry.x += dx
+                                    geometry.y += dy
+                                }
+                            }
+                            lastTouch = p
+                        }
+                        constrainGeometry()
+                        scheduleFrame()
+                    }
+                    MotionEvent.ACTION_POINTER_UP -> if (gestureActive) {
+                        val remaining = points.filterIndexed { index, _ -> index != event.actionIndex }
+                        pinch.rebase(remaining)
+                        lastTouch = remaining.singleOrNull()
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        if (gestureActive && !multiTouchGesture && !handleGesture) taps.onTouchEvent(event)
+                        endGesture()
                     }
                 }
                 true
@@ -275,22 +378,17 @@ class OverlayService : Service() {
                 Toast.makeText(this@OverlayService, "内存不足，无法旋转图片", Toast.LENGTH_SHORT).show()
                 return false
             }
-            if (frameScheduled) {
-                choreographer.removeFrameCallback(frameCallback)
-                frameScheduled = false
-            }
-            val centerX = params.x + params.width / 2f
-            val centerY = params.y + params.height / 2f
-            val previousWidth = params.width
-            params.width = params.height
-            params.height = previousWidth
-            targetWidth = params.width.toFloat()
-            params.x = (centerX - params.width / 2f).roundToInt()
-            params.y = (centerY - params.height / 2f).roundToInt()
-            // Let the renderer release the previous bitmap after its last frame.
+            endGesture()
+            val centerX = geometry.x + geometry.width / 2f
+            val centerY = geometry.y + geometry.height / 2f
+            val previousHeight = geometry.height
             bitmap = rotated
-            image.setImageBitmap(rotated)
-            updateLayout()
+            geometry.aspectRatio = aspectRatio
+            geometry.width = previousHeight
+            geometry.x = centerX - geometry.width / 2f
+            geometry.y = centerY - geometry.height / 2f
+            constrainGeometry()
+            renderGeometry()
             return true
         }
 
@@ -394,7 +492,6 @@ class OverlayService : Service() {
             removed = true
             if (frameScheduled) choreographer.removeFrameCallback(frameCallback)
             if (window.isAttachedToWindow) windowManager.removeView(window)
-            image.setImageDrawable(null)
             bitmap.recycle()
         }
     }

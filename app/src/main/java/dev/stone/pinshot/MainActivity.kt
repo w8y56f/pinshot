@@ -298,9 +298,8 @@ class MainActivity : AppCompatActivity() {
         handedOff = savedInstanceState?.getBoolean("handedOff") ?: false
         permissionPromptShown = savedInstanceState?.getBoolean("permissionPromptShown") ?: false
         pendingImage = savedInstanceState?.getString("pendingImage")?.let(::File)?.takeIf { it.isFile }
-        if (handedOff) {
-            finish()
-        } else if (pendingImage == null && intent.action == Intent.ACTION_SEND) {
+        // Do not import the original share again when this screen is recreated after pinning.
+        if (!handedOff && pendingImage == null && intent.action == Intent.ACTION_SEND) {
             @Suppress("DEPRECATION")
             val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
                 ?: intent.clipData?.let { if (it.itemCount > 0) it.getItemAt(0).uri else null }
@@ -488,7 +487,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun pinIfReady() {
         val file = pendingImage ?: return
-        if (!resumed || handedOff) return
+        if (!resumed) return
         if (!Settings.canDrawOverlays(this)) {
             status.text = "图片已准备好，但尚未允许悬浮窗。授权后返回即可自动钉图。"
             permissionButton.visibility = View.VISIBLE
@@ -508,7 +507,7 @@ class MainActivity : AppCompatActivity() {
         startService(Intent(this, OverlayService::class.java).putExtra(OverlayService.IMAGE_PATH, file.absolutePath))
         handedOff = true
         pendingImage = null
-        finish()
+        status.text = "已钉到屏幕，可以继续钉图或自行切换到其他应用。"
     }
 
     override fun onPause() {

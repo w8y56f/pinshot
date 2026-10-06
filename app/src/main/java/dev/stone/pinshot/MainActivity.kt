@@ -18,11 +18,14 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ResultReceiver
 import android.provider.Settings
+import android.text.TextUtils
+import android.util.TypedValue
 import android.view.View
 import android.view.MotionEvent
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -90,7 +93,18 @@ class MainActivity : AppCompatActivity() {
                 setTextColor(Color.WHITE)
                 alpha = .8f
                 setPadding(dp(12), dp(8), 0, 0)
-            })
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(ImageButton(this@MainActivity).apply {
+                setImageResource(R.drawable.ic_settings)
+                contentDescription = "设置"
+                tooltipText = "设置"
+                val ripple = TypedValue()
+                theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, ripple, true)
+                setBackgroundResource(ripple.resourceId)
+                setOnClickListener { showSettings() }
+            }, LinearLayout.LayoutParams(dp(48), dp(48)))
         }
         root.addView(header)
         val content = LinearLayout(this).apply {
@@ -318,6 +332,23 @@ class MainActivity : AppCompatActivity() {
                 status.text = "没有收到可读取的图片，请从截图或相册中分享一张图片。"
             }
         }
+    }
+
+    private fun showSettings() {
+        AlertDialog.Builder(this)
+            .setTitle("设置")
+            .setItems(arrayOf("关于")) { _, _ -> showAbout() }
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    private fun showAbout() {
+        val suffix = if (BuildConfig.DEBUG && BuildConfig.GIT_DIRTY) "-dirty" else ""
+        AlertDialog.Builder(this)
+            .setTitle("关于")
+            .setMessage("PinShot\n版本 ${BuildConfig.VERSION_NAME}\nCommit ID ${BuildConfig.GIT_COMMIT}$suffix\n\nPowered by Stone Wang")
+            .setPositiveButton("关闭", null)
+            .show()
     }
 
     private fun showTextMessage(message: String) {

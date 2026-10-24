@@ -70,4 +70,4 @@ PinShot needs the **Display over other apps** permission to show floating images
 
 ## Version
 
-Current project version: **1.0.0**.
+Current project version: **1.0.1**.

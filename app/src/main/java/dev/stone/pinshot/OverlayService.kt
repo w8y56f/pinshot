@@ -146,6 +146,18 @@ class OverlayService : Service() {
         private val imageBounds = RectF()
         private val reachableBounds = RectF()
         private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        private val shadowSize = 4f * density
+        private val shadowPadding = ceil(shadowSize).toInt() + 1
+        // Concentric strokes give a soft falloff without a software layer or a copy of
+        // the image. Their screen-space widths stay constant while the pin is resized.
+        private val shadowPaints = List(ceil(shadowSize).toInt().coerceAtLeast(1)) { index ->
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.argb((56f / ceil(shadowSize)).roundToInt().coerceAtLeast(1), 0, 0, 0)
+                style = Paint.Style.STROKE
+                strokeJoin = Paint.Join.ROUND
+                strokeWidth = 2f * (shadowSize - index)
+            }
+        }
         private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.argb(120, 255, 255, 255)
             style = Paint.Style.STROKE
@@ -172,6 +184,12 @@ class OverlayService : Service() {
                 drawnOriginY = screenLocation[1]
                 val x = geometry.x - screenLocation[0]
                 val y = geometry.y - screenLocation[1]
+                imageBounds.set(x, y, x + geometry.width, y + geometry.height)
+                val shadowSave = canvas.save()
+                // Keep transparent images and the rounded text card interior untouched.
+                canvas.clipOutRect(imageBounds)
+                shadowPaints.forEach { canvas.drawRect(imageBounds, it) }
+                canvas.restoreToCount(shadowSave)
                 bitmapMatrix.setScale(geometry.width / bitmap.width, geometry.height / bitmap.height)
                 bitmapMatrix.postTranslate(x, y)
                 canvas.drawBitmap(bitmap, bitmapMatrix, bitmapPaint)
@@ -266,10 +284,13 @@ class OverlayService : Service() {
                 params.width = bounds.width()
                 params.height = bounds.height()
             } else {
-                params.x = floor(geometry.x).toInt()
-                params.y = floor(geometry.y).toInt()
-                params.width = (ceil(geometry.x + geometry.width).toInt() - params.x).coerceAtLeast(1)
-                params.height = (ceil(geometry.y + geometry.height).toInt() - params.y).coerceAtLeast(1)
+                // Geometry describes the image only; the surface also contains its shadow.
+                params.x = floor(geometry.x).toInt() - shadowPadding
+                params.y = floor(geometry.y).toInt() - shadowPadding
+                params.width = (ceil(geometry.x + geometry.width).toInt() + shadowPadding - params.x)
+                    .coerceAtLeast(1)
+                params.height = (ceil(geometry.y + geometry.height).toInt() + shadowPadding - params.y)
+                    .coerceAtLeast(1)
             }
         }
 
@@ -342,10 +363,14 @@ class OverlayService : Service() {
                 }
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
+                        val p = points.first()
+                        if (p.x < geometry.x || p.x >= geometry.x + geometry.width ||
+                            p.y < geometry.y || p.y >= geometry.y + geometry.height) {
+                            return@setOnTouchListener false
+                        }
                         refreshReachableBounds()
                         gestureActive = true
                         multiTouchGesture = false
-                        val p = points.first()
                         lastTouch = p
                         handleGesture = geometry.isInResizeHandle(p.x, p.y, handleSize.toFloat()) &&
                             !geometry.shouldDragInsteadOfResize(reachableBounds.left, reachableBounds.top,

@@ -146,23 +146,8 @@ class OverlayService : Service() {
         private val imageBounds = RectF()
         private val reachableBounds = RectF()
         private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-        private val shadowSize = 4f * density
-        private val shadowPadding = ceil(shadowSize).toInt() + 1
-        // Concentric strokes give a soft falloff without a software layer or a copy of
-        // the image. Their screen-space widths stay constant while the pin is resized.
-        private val shadowPaints = List(ceil(shadowSize).toInt().coerceAtLeast(1)) { index ->
-            Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.argb((56f / ceil(shadowSize)).roundToInt().coerceAtLeast(1), 0, 0, 0)
-                style = Paint.Style.STROKE
-                strokeJoin = Paint.Join.ROUND
-                strokeWidth = 2f * (shadowSize - index)
-            }
-        }
-        private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(120, 255, 255, 255)
-            style = Paint.Style.STROKE
-            strokeWidth = 2f
-        }
+        private val decoration = PinDecoration(density)
+        private val shadowPadding = decoration.padding
         private val handleSize = (24 * density).roundToInt()
         private val handle = ResizeHandleView(this@OverlayService)
         private val image = object : View(this@OverlayService) {
@@ -185,16 +170,11 @@ class OverlayService : Service() {
                 val x = geometry.x - screenLocation[0]
                 val y = geometry.y - screenLocation[1]
                 imageBounds.set(x, y, x + geometry.width, y + geometry.height)
-                val shadowSave = canvas.save()
-                // Keep transparent images and the rounded text card interior untouched.
-                canvas.clipOutRect(imageBounds)
-                shadowPaints.forEach { canvas.drawRect(imageBounds, it) }
-                canvas.restoreToCount(shadowSave)
+                decoration.drawShadow(canvas, imageBounds)
                 bitmapMatrix.setScale(geometry.width / bitmap.width, geometry.height / bitmap.height)
                 bitmapMatrix.postTranslate(x, y)
                 canvas.drawBitmap(bitmap, bitmapMatrix, bitmapPaint)
-                imageBounds.set(x + 1f, y + 1f, x + geometry.width - 1f, y + geometry.height - 1f)
-                canvas.drawRoundRect(imageBounds, 10f, 10f, borderPaint)
+                decoration.drawBorder(canvas, imageBounds)
             }
         }
         val window = object : FrameLayout(this@OverlayService) {
@@ -449,11 +429,31 @@ class OverlayService : Service() {
             return true
         }
 
-        fun saveToGallery() {
+        fun saveToGallery(withDecoration: Boolean = false) {
             if (removed) return
             // Own a snapshot so closing or rotating this pin cannot invalidate the export.
             val snapshot = try {
-                bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                if (withDecoration) {
+                    val padding = decoration.padding
+                    val output = Bitmap.createBitmap(
+                        bitmap.width + padding * 2, bitmap.height + padding * 2,
+                        Bitmap.Config.ARGB_8888
+                    )
+                    try {
+                        val canvas = Canvas(output)
+                        val bounds = RectF(padding.toFloat(), padding.toFloat(),
+                            (padding + bitmap.width).toFloat(), (padding + bitmap.height).toFloat())
+                        decoration.drawShadow(canvas, bounds)
+                        canvas.drawBitmap(bitmap, padding.toFloat(), padding.toFloat(), bitmapPaint)
+                        decoration.drawBorder(canvas, bounds)
+                        output
+                    } catch (error: Throwable) {
+                        output.recycle()
+                        throw error
+                    }
+                } else {
+                    bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                }
             } catch (_: OutOfMemoryError) {
                 null
             }
@@ -595,7 +595,7 @@ class OverlayService : Service() {
 
     private fun showActions(pin: Pin) {
         if (actionDialog?.isShowing == true) return
-        val actions = arrayOf("关闭", "逆时针旋转", "保存", "分享", "关闭所有")
+        val actions = arrayOf("关闭", "逆时针旋转", "保存", "保存(带边框阴影)", "分享", "关闭所有")
         val dialog = AlertDialog.Builder(this)
             .setTitle("钉图操作")
             .setItems(actions, null)
@@ -638,9 +638,13 @@ class OverlayService : Service() {
                 }
                 3 -> {
                     dialog.dismiss()
-                    pin.share()
+                    pin.saveToGallery(withDecoration = true)
                 }
                 4 -> {
+                    dialog.dismiss()
+                    pin.share()
+                }
+                5 -> {
                     dialog.dismiss()
                     importGeneration++
                     pins.forEach { it.remove() }
